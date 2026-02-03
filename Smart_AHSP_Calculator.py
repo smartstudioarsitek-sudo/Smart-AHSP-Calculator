@@ -3,46 +3,36 @@ import pandas as pd
 import csv
 import io
 
-# --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="Pro AHSP Calculator 2025", layout="wide")
+st.set_page_config(page_title="Smart RAB System 2025", layout="wide", initial_sidebar_state="expanded")
 
-# --- CSS AGAR TABEL LEBIH LEGA ---
+# --- CSS STYLING ---
 st.markdown("""
 <style>
-    .block-container {padding-top: 2rem; padding-bottom: 2rem;}
-    div[data-testid="stMetric"] {
-        background-color: #f0f2f6;
-        padding: 10px;
-        border-radius: 8px;
-    }
+    .big-font {font-size:24px !important; font-weight: bold;}
+    .metric-container {background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #ff4b4b;}
+    div[data-testid="stExpander"] {border: 1px solid #e0e0e0; border-radius: 8px;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNGSI 1: LOAD DATABASE HARGA (UPAH BAHAN) ---
+# --- FUNGSI 1: LOAD DATABASE HARGA ---
 @st.cache_data
 def load_master_db(file_obj):
-    """Membaca file 'Upah Bahan.csv' dengan penanganan error yang lebih kuat"""
     try:
-        # Baca dulu sebagai text raw untuk mencari posisi header
+        # Deteksi Header (Cari baris yang ada kata KODE dan SATUAN)
         content = file_obj.getvalue().decode("utf-8", errors='ignore')
-        
-        # Cari baris header
         header_row = -1
         lines = content.splitlines()
-        for i, line in enumerate(lines[:30]): # Cek 30 baris pertama
+        for i, line in enumerate(lines[:30]):
             if "KODE" in line.upper() and "SATUAN" in line.upper():
                 header_row = i
                 break
         
-        if header_row == -1:
-            st.error("Header 'KODE' dan 'SATUAN' tidak ditemukan di file Upah Bahan.")
-            return pd.DataFrame()
+        if header_row == -1: return pd.DataFrame()
 
-        # Baca CSV mulai dari header yang ditemukan
         file_obj.seek(0)
         df = pd.read_csv(file_obj, header=header_row)
         
-        # Mapping nama kolom dinamis
+        # Mapping Kolom
         col_map = {}
         for c in df.columns:
             c_up = str(c).upper()
@@ -51,51 +41,33 @@ def load_master_db(file_obj):
             elif "SATUAN" in c_up and "HARGA" not in c_up: col_map['satuan'] = c
             elif "HARGA" in c_up: col_map['harga'] = c
 
-        # Bersihkan Data
         clean_data = []
         for _, row in df.iterrows():
             try:
-                # Skip jika uraian kosong
-                if pd.isna(row.get(col_map.get('uraian'))) or str(row.get(col_map.get('uraian'))).strip() == "":
-                    continue
+                # Ambil data
+                uraian = str(row[col_map.get('uraian')]).strip()
+                if not uraian or uraian.lower() == 'nan': continue
                 
-                kode = str(row[col_map['kode']]).strip() if pd.notna(row.get(col_map.get('kode'))) else "-"
-                uraian = str(row[col_map['uraian']]).strip()
-                satuan = str(row[col_map['satuan']]).strip() if pd.notna(row.get(col_map.get('satuan'))) else "-"
+                kode = str(row[col_map.get('kode', '')]).strip()
+                satuan = str(row[col_map.get('satuan', '')]).strip()
                 
-                # Parsing Harga (Format Indo: 1.000.000,00)
-                harga_raw = str(row[col_map['harga']]).replace('.', '').replace(',', '.')
-                try:
-                    harga = float(harga_raw)
-                except:
-                    harga = 0
-
-                clean_data.append({
-                    'Kode': kode,
-                    'Uraian': uraian,
-                    'Satuan': satuan,
-                    'Harga_Standar': harga
-                })
-            except:
-                continue
+                # Bersihkan Harga
+                h_raw = str(row[col_map.get('harga', '0')]).replace('.', '').replace(',', '.')
+                try: harga = float(h_raw)
+                except: harga = 0
                 
+                clean_data.append({'Kode': kode, 'Uraian': uraian, 'Satuan': satuan, 'Harga': harga})
+            except: continue
+            
         return pd.DataFrame(clean_data)
+    except: return pd.DataFrame()
 
-    except Exception as e:
-        st.error(f"Error membaca Upah Bahan: {e}")
-        return pd.DataFrame()
-
-# --- FUNGSI 2: PARSING ANALISA (ANTI-BUG KOMA) ---
+# --- FUNGSI 2: PARSING ANALISA (MESIN UTAMA) ---
 def parse_analysis_file(file_obj):
-    """Membaca file analisa pekerjaan dengan modul CSV reader yang aman"""
     job_items = {}
-    
-    # Baca file sebagai string
     content = file_obj.getvalue().decode("utf-8", errors='ignore')
-    
-    # Gunakan csv.reader agar teks bertyoe "Pipa, Dia 2" tidak terpotong
     f = io.StringIO(content)
-    reader = csv.reader(f, delimiter=',')
+    reader = csv.reader(f)
     
     current_job = None
     components = []
@@ -103,214 +75,241 @@ def parse_analysis_file(file_obj):
     
     for parts in reader:
         if not parts: continue
-        
-        # Bersihkan spasi di setiap kolom
         parts = [p.strip() for p in parts]
         
-        # 1. Deteksi Judul Pekerjaan (Misal: 2.2.1.1)
+        # Deteksi Judul Pekerjaan (X.X.X.X)
         id_val, desc_val = None, None
-        
-        # Cari kolom yang formatnya angka titik angka (X.X.X)
         for i, p in enumerate(parts):
-            # Syarat: Ada angka, ada titik, panjang minimal 3
             if len(p) >= 3 and p[0].isdigit() and '.' in p and len(p) < 20:
-                # Cek kolom kanannya ada deskripsi panjang
                 if i+1 < len(parts) and len(parts[i+1]) > 5:
                     id_val = p
                     desc_val = parts[i+1]
                     break
         
         if id_val and desc_val:
-            # Simpan pekerjaan sebelumnya
-            if current_job:
-                job_items[current_job] = components
-            
-            # Mulai pekerjaan baru
+            if current_job: job_items[current_job] = components
             current_job = f"{id_val} - {desc_val}"
             components = []
             capture = True
             continue
             
-        # 2. Ambil Komponen
+        # Deteksi Komponen
         if capture and current_job:
-            # Skip baris header
-            line_str = "".join(parts).upper()
-            if "URAIAN" in line_str or "JUMLAH" in line_str or "HARGA SATUAN" in line_str:
-                continue
+            if any(x in "".join(parts).upper() for x in ["URAIAN", "JUMLAH", "HARGA SATUAN"]): continue
             
-            # Cari Koefisien (Angka float sendirian di tengah)
+            # Cari Koefisien
             coeff_idx = -1
             for i, p in enumerate(parts):
                 if not p: continue
                 try:
                     val = float(p)
-                    # Syarat koefisien: Angka wajar (0 s.d 5000), bukan No urut (1,2,3)
-                    # Cek kolom kirinya (Satuan) biasanya teks pendek
-                    if 0 <= val < 10000:
-                        if i > 0 and 0 < len(parts[i-1]) <= 8: # Satuan biasanya pendek (OH, m3, bh)
-                            coeff_idx = i
-                            break
+                    if 0 <= val < 10000 and i > 0 and 0 < len(parts[i-1]) <= 8:
+                        coeff_idx = i
+                        break
                 except: pass
             
             if coeff_idx != -1:
                 try:
-                    koef = float(parts[coeff_idx])
-                    unit = parts[coeff_idx-1]
-                    
-                    # Logika Nama & Kode
-                    # Pola umum: [Nama] [Kode] [Satuan] [Koef]
-                    # Atau:      [Nama] [Satuan] [Koef]
-                    
-                    col_left = parts[coeff_idx-2] if coeff_idx >= 2 else ""
-                    col_left_2 = parts[coeff_idx-3] if coeff_idx >= 3 else ""
-                    
-                    kode = ""
-                    nama = ""
-                    
-                    # Cek apakah kolom kiri itu kode (L.01, M.02, dsb)
-                    if len(col_left) < 15 and ('.' in col_left or any(c.isdigit() for c in col_left)):
-                        kode = col_left
-                        nama = col_left_2
-                    else:
-                        nama = col_left # Tidak ada kode
-                    
-                    if nama:
-                        components.append({
-                            'uraian': nama,
-                            'kode': kode,
-                            'unit': unit,
-                            'koef': koef
-                        })
+                    components.append({
+                        'uraian': parts[coeff_idx-2] if coeff_idx >= 2 and len(parts[coeff_idx-2]) > 2 else parts[coeff_idx-3],
+                        'kode': parts[coeff_idx-2] if coeff_idx >= 2 and ('.' in parts[coeff_idx-2] or parts[coeff_idx-2].isalnum()) else "-",
+                        'unit': parts[coeff_idx-1],
+                        'koef': float(parts[coeff_idx])
+                    })
                 except: pass
 
-    # Simpan record terakhir
-    if current_job:
-        job_items[current_job] = components
-        
+    if current_job: job_items[current_job] = components
     return job_items
 
-# --- MAIN UI ---
-st.title("🏗️ Smart AHSP Calculator (Final Version)")
-st.caption("Support Multi-Sheet Upload & Auto-Template")
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("1. Database Harga")
-    file_master = st.file_uploader("Upload 'Upah Bahan.csv'", type='csv')
+# --- FUNGSI 3: HITUNG HARGA SATUAN (HSP) ---
+def hitung_hsp(components, price_db):
+    total_basic = 0
+    for c in components:
+        # Lookup Harga
+        h = 0
+        if c['kode'] in price_db: h = price_db[c['kode']]
+        elif c['uraian'].lower() in price_db: h = price_db[c['uraian'].lower()]
+        else:
+            # Partial match
+            for k, v in price_db.items():
+                if k in c['uraian'].lower(): 
+                    h = v; break
+        total_basic += (c['koef'] * h)
     
-    price_db = {} 
-    df_master = pd.DataFrame()
+    overhead = total_basic * 0.10
+    return total_basic + overhead
 
-    if file_master:
-        df_master = load_master_db(file_master)
-        if not df_master.empty:
-            st.success(f"✅ Master OK: {len(df_master)} item")
+# ==========================================
+#               USER INTERFACE
+# ==========================================
+
+st.title("🏗️ Sistem Manajemen RAB - SE PUPR 30/2025")
+st.write("Fitur: Template Harga, Template Volume (BoQ), dan Perhitungan Batch.")
+
+# --- TABS NAVIGASI ---
+tab1, tab2, tab3 = st.tabs(["📂 1. Upload Data", "📝 2. Input Harga & Volume", "💰 3. Hasil RAB"])
+
+# GLOBAL VARIABLES
+if 'master_prices' not in st.session_state: st.session_state.master_prices = {}
+if 'analisa_jobs' not in st.session_state: st.session_state.analisa_jobs = {}
+
+# --- TAB 1: UPLOAD DATA ---
+with tab1:
+    col_a, col_b = st.columns(2)
+    
+    with col_a:
+        st.header("A. Data Harga (Upah/Bahan)")
+        file_master = st.file_uploader("Upload 'Upah Bahan.csv'", type='csv')
+        if file_master:
+            df_master = load_master_db(file_master)
+            if not df_master.empty:
+                # Simpan ke session state sebagai default
+                st.session_state.master_prices = {}
+                for _, row in df_master.iterrows():
+                    st.session_state.master_prices[str(row['Uraian']).lower()] = row['Harga']
+                    if row['Kode'] != "-" and row['Kode'] != "nan":
+                        st.session_state.master_prices[row['Kode']] = row['Harga']
+                st.success(f"✅ {len(df_master)} Item Harga Terbaca")
+    
+    with col_b:
+        st.header("B. Data Analisa (Pekerjaan)")
+        files_analisa = st.file_uploader("Upload File Analisa (.csv)", type='csv', accept_multiple_files=True)
+        if files_analisa:
+            jobs = {}
+            for f in files_analisa:
+                jobs.update(parse_analysis_file(f))
+            st.session_state.analisa_jobs = jobs
+            st.success(f"✅ {len(jobs)} Analisa Pekerjaan Terbaca")
+
+# --- TAB 2: INPUT & TEMPLATE ---
+with tab2:
+    if not st.session_state.master_prices or not st.session_state.analisa_jobs:
+        st.warning("⚠️ Harap upload file di Tab 1 terlebih dahulu.")
+    else:
+        st.info("Di sini Anda bisa mendownload template untuk mengisi Harga Baru dan Volume Pekerjaan.")
+        
+        c1, c2 = st.columns(2)
+        
+        # --- KOLOM 1: TEMPLATE HARGA ---
+        with c1:
+            st.subheader("1. Template Harga")
+            st.caption("Gunakan ini jika ingin mengubah harga dasar (Upah/Bahan).")
             
-            # Template Downloader
-            with st.expander("📥 Download / Upload Template Harga"):
-                df_template = df_master[['Kode', 'Uraian', 'Satuan', 'Harga_Standar']].copy()
-                df_template['Harga_Baru'] = 0
-                st.download_button(
-                    "Download Template CSV",
-                    df_template.to_csv(index=False).encode('utf-8'),
-                    "Template_Harga.csv",
-                    "text/csv"
-                )
+            # Generate Template Harga
+            if file_master: # Re-use df_master if possible or re-load
+                file_master.seek(0)
+                df_m = load_master_db(file_master)
+                df_temp_harga = df_m[['Kode', 'Uraian', 'Satuan', 'Harga']].copy()
+                df_temp_harga.rename(columns={'Harga': 'Harga_Standar'}, inplace=True)
+                df_temp_harga['Harga_Baru'] = 0 # Kolom input user
                 
-                user_file = st.file_uploader("Upload Template Terisi", type='csv')
-                if user_file:
-                    try:
-                        df_user = pd.read_csv(user_file)
-                        for _, row in df_user.iterrows():
-                            # Prioritas Harga Baru
-                            p = float(row['Harga_Baru']) if row['Harga_Baru'] > 0 else float(row['Harga_Standar'])
-                            price_db[str(row['Uraian']).lower().strip()] = p
-                            if str(row['Kode']).strip() != "-":
-                                price_db[str(row['Kode']).strip()] = p
-                        st.info("✅ Menggunakan Harga User")
-                    except:
-                        st.error("Format template salah")
-    
-    # Jika user tidak upload template, pakai harga standar
-    if not price_db and not df_master.empty:
-        for _, row in df_master.iterrows():
-            price_db[str(row['Uraian']).lower().strip()] = row['Harga_Standar']
-            if row['Kode'] != "-":
-                price_db[row['Kode']] = row['Harga_Standar']
-
-    st.divider()
-    st.header("2. File Analisa")
-    files_analisa = st.file_uploader("Upload Semua File Analisa (.csv)", type='csv', accept_multiple_files=True)
-
-# --- MAIN PAGE ---
-if files_analisa and price_db:
-    # Parsing semua file sekaligus
-    all_jobs = {}
-    for f in files_analisa:
-        all_jobs.update(parse_analysis_file(f))
-    
-    # Filter yang kosong (kadang ada sisa header)
-    all_jobs = {k: v for k, v in all_jobs.items() if len(v) > 0}
-    
-    st.success(f"Berhasil membaca **{len(all_jobs)} jenis pekerjaan** dari {len(files_analisa)} file.")
-    
-    # Pilihan
-    selected_job = st.selectbox("👉 Pilih Analisa Pekerjaan:", sorted(list(all_jobs.keys())))
-    volume = st.number_input("Volume Pekerjaan:", min_value=1.0, value=1.0, step=0.1)
-    
-    if selected_job:
-        comps = all_jobs[selected_job]
-        st.subheader(f"Analisa: {selected_job}")
-        
-        # Tabel Hitungan
-        data_rows = []
-        total_hsp = 0
-        
-        for c in comps:
-            # Lookup Harga
-            h = 0
-            src = "Nol"
+                st.download_button("⬇️ Download Template Harga", 
+                                 df_temp_harga.to_csv(index=False).encode('utf-8'), 
+                                 "Template_Harga.csv", "text/csv")
             
-            # Cek Kode dulu
-            if c['kode'] in price_db:
-                h = price_db[c['kode']]
-                src = "Kode"
-            # Cek Nama
-            elif c['uraian'].lower() in price_db:
-                h = price_db[c['uraian'].lower()]
-                src = "Nama"
-            else:
-                # Cek Partial
-                for k, v in price_db.items():
-                    if k in c['uraian'].lower():
-                        h = v
-                        src = "Estimasi"
+            # Upload Balik
+            upload_harga = st.file_uploader("Upload Template Harga (Terisi)", type='csv')
+            if upload_harga:
+                df_new = pd.read_csv(upload_harga)
+                count = 0
+                for _, row in df_new.iterrows():
+                    if row['Harga_Baru'] > 0:
+                        st.session_state.master_prices[str(row['Uraian']).lower()] = float(row['Harga_Baru'])
+                        if str(row['Kode']) != "-" and str(row['Kode']) != "nan":
+                            st.session_state.master_prices[str(row['Kode'])] = float(row['Harga_Baru'])
+                        count += 1
+                st.success(f"✅ {count} Harga Baru Diupdate!")
+
+        # --- KOLOM 2: TEMPLATE VOLUME (RAB) ---
+        with c2:
+            st.subheader("2. Template RAB (Volume)")
+            st.caption("Daftar semua pekerjaan dari file analisa. Isi volumenya untuk menghitung total.")
+            
+            # Generate Daftar Pekerjaan dari Analisa yang diupload
+            job_list = []
+            for job_name in st.session_state.analisa_jobs.keys():
+                # Coba pecahkan kode dan nama
+                parts = job_name.split(' - ', 1)
+                kode = parts[0] if len(parts) > 1 else "-"
+                uraian = parts[1] if len(parts) > 1 else job_name
+                job_list.append({
+                    'Kode_Analisa': kode,
+                    'Uraian_Pekerjaan': uraian,
+                    'Volume': 0.0
+                })
+            
+            df_boq = pd.DataFrame(job_list)
+            
+            st.download_button("⬇️ Download Template RAB (Volume)", 
+                             df_boq.to_csv(index=False).encode('utf-8'), 
+                             "Template_RAB.csv", "text/csv")
+            
+            # Upload Balik RAB
+            st.session_state.boq_data = None
+            upload_boq = st.file_uploader("Upload Template RAB (Terisi)", type='csv')
+            if upload_boq:
+                st.session_state.boq_data = pd.read_csv(upload_boq)
+                st.success("✅ Data Volume Diterima!")
+
+# --- TAB 3: HASIL PERHITUNGAN ---
+with tab3:
+    if 'boq_data' in st.session_state and st.session_state.boq_data is not None:
+        st.header("💰 Rekapitulasi Anggaran Biaya (RAB)")
+        
+        # Proses Hitung
+        rab_rows = []
+        total_proyek = 0
+        
+        # Progress Bar
+        progress_bar = st.progress(0)
+        total_items = len(st.session_state.boq_data)
+        
+        for idx, row in st.session_state.boq_data.iterrows():
+            vol = float(row['Volume'])
+            if vol <= 0: continue # Skip volume 0
+            
+            # Reconstruct Key
+            job_key = f"{row['Kode_Analisa']} - {row['Uraian_Pekerjaan']}"
+            
+            # Cari di Analisa (Try exact match first, then fuzzy)
+            comps = st.session_state.analisa_jobs.get(job_key)
+            
+            # Jika key dari CSV beda dikit (misal excel auto format), coba cari partial
+            if not comps:
+                for k, v in st.session_state.analisa_jobs.items():
+                    if str(row['Kode_Analisa']) in k:
+                        comps = v
+                        job_key = k # Update key
                         break
             
-            tot = c['koef'] * h
-            total_hsp += tot
+            if comps:
+                hsp = hitung_hsp(comps, st.session_state.master_prices)
+                total_harga = hsp * vol
+                total_proyek += total_harga
+                
+                rab_rows.append({
+                    "Kode": row['Kode_Analisa'],
+                    "Uraian Pekerjaan": row['Uraian_Pekerjaan'],
+                    "Volume": vol,
+                    "HSP (Rp)": f"{hsp:,.2f}",
+                    "Total Harga (Rp)": f"{total_harga:,.2f}",
+                    "_raw_total": total_harga # Hidden column for sorting
+                })
             
-            data_rows.append({
-                "Kode": c['kode'],
-                "Uraian Komponen": c['uraian'],
-                "Koef": c['koef'],
-                "Satuan": c['unit'],
-                "Harga Satuan": f"Rp {h:,.0f}",
-                "Total": f"Rp {tot:,.0f}",
-                "Match": src
-            })
+            progress_bar.progress((idx + 1) / total_items)
             
-        st.dataframe(pd.DataFrame(data_rows), use_container_width=True)
-        
-        # Rekap
-        overhead = total_hsp * 0.10
-        grand_total = (total_hsp + overhead) * volume
-        
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Biaya Dasar", f"Rp {total_hsp:,.0f}")
-        c2.metric("Overhead (10%)", f"Rp {overhead:,.0f}")
-        c3.metric("Harga Satuan", f"Rp {total_hsp+overhead:,.0f}")
-        c4.metric("TOTAL PROYEK", f"Rp {grand_total:,.0f}", delta="Final")
-
-elif not file_master:
-    st.info("👈 Silakan upload file **Upah Bahan.csv** terlebih dahulu di sidebar.")
+        # Tampilkan Hasil
+        if rab_rows:
+            df_result = pd.read_json(io.StringIO(pd.DataFrame(rab_rows).to_json())) # Trick to format
+            
+            st.metric("TOTAL BIAYA PROYEK", f"Rp {total_proyek:,.2f}")
+            st.dataframe(df_result[['Kode', 'Uraian Pekerjaan', 'Volume', 'HSP (Rp)', 'Total Harga (Rp)']], use_container_width=True)
+            
+            # Download Hasil Akhir
+            csv_result = pd.DataFrame(rab_rows).drop(columns=['_raw_total']).to_csv(index=False).encode('utf-8')
+            st.download_button("💾 Download Hasil RAB Final (CSV)", csv_result, "Final_RAB.csv", "text/csv")
+        else:
+            st.warning("Belum ada item pekerjaan dengan Volume > 0.")
+            
+    else:
+        st.info("👈 Silakan Upload Template RAB yang sudah diisi di Tab 2 untuk melihat hasil.")
